@@ -67,7 +67,80 @@ const DEFAULT_ROOMS = [
   { id: 'Draußen', icon: '🌳' }
 ];
 
+const DEFAULT_PERSONS = [
+  { id: 'p_maria', name: 'Maria', color: '#ef4444' },
+  { id: 'p_paul', name: 'Paul', color: '#f97316' },
+  { id: 'p_lena', name: 'Lena', color: '#eab308' },
+  { id: 'p_noah', name: 'Noah', color: '#22c55e' },
+  { id: 'p_anna', name: 'Anna', color: '#0ea5e9' },
+  { id: 'p_felix', name: 'Felix', color: '#a855f7' }
+];
+
 const ROOM_ICONS = ['🍳','🛁','🛋️','🛏️','🧸','🚪','🚪','🌳','🏠','🧹','🪴','🚗'];
+
+function buildStarterTasks(persons) {
+  const ids = persons.map(p => p.id);
+  const p1 = ids[0] || 'p_1';
+  const p2 = ids[1] || p1;
+  const p3 = ids[2] || p1;
+
+  return [
+    {
+      id: 't_seed_1',
+      category: 'Aufgabe',
+      name: 'Müll rausbringen',
+      room: 'Küche',
+      assignedIds: [p1, p2],
+      frequency: 'Wöchentlich',
+      dayOfWeek: 'Mittwoch',
+      time: '18:00',
+      dueDate: getNextDueDate('Mittwoch', new Date()),
+      isDone: false,
+      completedAt: null,
+      createdAt: new Date().toISOString(),
+      subtasks: [{ id: 'st_seed_1a', text: 'Tüten kontrollieren', isDone: false }]
+    },
+    {
+      id: 't_seed_2',
+      category: 'Aufgabe',
+      name: 'Bad reinigen',
+      room: 'Badezimmer',
+      assignedIds: [p2, p3],
+      frequency: 'Wöchentlich',
+      dayOfWeek: 'Freitag',
+      time: '19:30',
+      dueDate: getNextDueDate('Freitag', new Date()),
+      isDone: false,
+      completedAt: null,
+      createdAt: new Date().toISOString(),
+      subtasks: [{ id: 'st_seed_2a', text: 'Spiegel und Fliesen', isDone: false }]
+    },
+    {
+      id: 't_seed_3',
+      category: 'Aufgabe',
+      name: 'Wohnzimmer aufräumen',
+      room: 'Wohnzimmer',
+      assignedIds: [p3, p1],
+      frequency: 'Wöchentlich',
+      dayOfWeek: 'Samstag',
+      time: '10:00',
+      dueDate: getNextDueDate('Samstag', new Date()),
+      isDone: false,
+      completedAt: null,
+      createdAt: new Date().toISOString(),
+      subtasks: [{ id: 'st_seed_3a', text: 'Kissen und Decken sortieren', isDone: false }]
+    }
+  ];
+}
+
+function getDefaultData() {
+  const persons = DEFAULT_PERSONS;
+  return {
+    persons,
+    tasks: processTasksReset(buildStarterTasks(persons)),
+    rooms: DEFAULT_ROOMS
+  };
+}
 
 function getRoomsWithAll(rooms) {
   return [{ id: 'Alle', icon: '🏠' }, ...rooms];
@@ -942,21 +1015,31 @@ function App() {
 
   useEffect(() => {
     let storedData = loadData();
-    if (storedData) {
-      if (storedData.persons) {
-         storedData.persons = storedData.persons.map(p => ({
-            ...p,
-            color: MIGRATION_COLORS[p.color] || p.color
-         }));
-      }
-      storedData.tasks = processTasksReset(storedData.tasks || []);
+    const fallbackData = getDefaultData();
+
+    if (!storedData || !storedData.persons || storedData.persons.length === 0) {
+      storedData = fallbackData;
+    } else {
+      storedData.persons = storedData.persons.map(p => ({
+        ...p,
+        color: MIGRATION_COLORS[p.color] || p.color,
+        name: p.name && p.name.trim() ? p.name.trim() : 'Unbekannt'
+      }));
+      storedData.tasks = processTasksReset(storedData.tasks || fallbackData.tasks);
+      storedData.rooms = storedData.rooms && storedData.rooms.length ? storedData.rooms : DEFAULT_ROOMS;
     }
+
+    saveData(storedData);
     setData(storedData);
     setIsLoaded(true);
   }, []);
 
   const handleSetupComplete = (persons) => {
-    const newData = { persons, tasks: [], rooms: DEFAULT_ROOMS };
+    const newData = {
+      persons,
+      tasks: buildStarterTasks(persons),
+      rooms: DEFAULT_ROOMS
+    };
     setData(newData);
     saveData(newData);
   };
