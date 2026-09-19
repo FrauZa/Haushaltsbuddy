@@ -1,0 +1,989 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🧹</text></svg>">
+  <title>HaushaltsBuddy</title>
+  <script src="https://unpkg.com/react@18/umd/react.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <link rel="stylesheet" href="style.css">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=0">
+  <style>
+    /* Add specific color input styles for Safari/iOS compatibility */
+    input[type="color"] {
+       -webkit-appearance: none;
+       appearance: none;
+       border: none;
+       width: 32px;
+       height: 32px;
+       border-radius: 4px;
+       cursor: pointer;
+       padding: 0;
+       background: none;
+    }
+    input[type="color"]::-webkit-color-swatch-wrapper {
+        padding: 0;
+    }
+    input[type="color"]::-webkit-color-swatch {
+        border: 2px solid var(--color-border);
+        border-radius: 4px;
+    }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel">
+const { useState, useEffect, useMemo } = React;
+
+const STORAGE_KEY = 'haushaltsbuddy_data';
+
+const MIGRATION_COLORS = {
+  'var(--c-person-1)': '#ef4444',
+  'var(--c-person-2)': '#f97316',
+  'var(--c-person-3)': '#eab308',
+  'var(--c-person-4)': '#22c55e',
+  'var(--c-person-5)': '#0ea5e9',
+  'var(--c-person-6)': '#a855f7'
+};
+
+const COLOR_PRESETS = [
+  '#ef4444', 
+  '#f97316', 
+  '#eab308', 
+  '#22c55e', 
+  '#0ea5e9', 
+  '#a855f7'
+];
+
+const DEFAULT_ROOMS = [
+  { id: 'Küche', icon: '🍳' },
+  { id: 'Badezimmer', icon: '🛁' },
+  { id: 'Wohnzimmer', icon: '🛋️' },
+  { id: 'Schlafzimmer', icon: '🛏️' },
+  { id: 'Kinderzimmer', icon: '🧸' },
+  { id: 'Flur oben', icon: '🚪' },
+  { id: 'Flur unten', icon: '🚪' },
+  { id: 'Draußen', icon: '🌳' }
+];
+
+const ROOM_ICONS = ['🍳','🛁','🛋️','🛏️','🧸','🚪','🚪','🌳','🏠','🧹','🪴','🚗'];
+
+function getRoomsWithAll(rooms) {
+  return [{ id: 'Alle', icon: '🏠' }, ...rooms];
+}
+
+const DAY_OPTIONS = ['Jeden Tag', 'Montag', 'Dienstag', 'Mittwoch', 'Donnerstag', 'Freitag', 'Samstag', 'Sonntag'];
+const DAY_MAP = { 'Sonntag':0, 'Montag':1, 'Dienstag':2, 'Mittwoch':3, 'Donnerstag':4, 'Freitag':5, 'Samstag':6 };
+
+// --- Utilities ---
+function getInitials(name) {
+  return name.substring(0, 2).toUpperCase();
+}
+
+function loadData() {
+  try {
+    const data = localStorage.getItem(STORAGE_KEY);
+    if (!data) return null;
+    return JSON.parse(data);
+  } catch (e) {
+    return null;
+  }
+}
+
+function saveData(data) {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+}
+
+function getNextDueDate(dayOfWeekStr, fromDate = new Date()) {
+  if (!dayOfWeekStr || (dayOfWeekStr !== 'Jeden Tag' && DAY_MAP[dayOfWeekStr] === undefined)) {
+    dayOfWeekStr = 'Jeden Tag';
+  }
+
+  const date = new Date(fromDate);
+  if (isNaN(date.getTime())) {
+    date.setTime(Date.now());
+  }
+  date.setHours(0,0,0,0);
+  
+  if (dayOfWeekStr === 'Jeden Tag') {
+    return date.toISOString().split('T')[0];
+  }
+  
+  const targetDay = DAY_MAP[dayOfWeekStr];
+  let currentDay = date.getDay();
+  
+  let diff = targetDay - currentDay;
+  if (diff < 0) diff += 7;
+  
+  date.setDate(date.getDate() + diff);
+  return date.toISOString().split('T')[0];
+}
+
+function getPriorityColor(task) {
+   if (task.category === 'Hobby') return 'transparent';
+   if (!task.dueDate) return 'var(--prio-low)'; // Default green
+
+   const now = new Date();
+   now.setHours(0,0,0,0);
+   const due = new Date(task.dueDate);
+   if (isNaN(due.getTime())) return 'var(--prio-low)';
+   
+   const diffDays = Math.floor((now - due) / (1000 * 60 * 60 * 24));
+   
+   if (diffDays <= 0) return 'var(--prio-low)'; // Green
+   if (diffDays === 1) return 'var(--prio-medium)'; // Orange
+   return 'var(--prio-high)'; // Red
+}
+
+function processTasksReset(tasks) {
+  const todayStr = new Date().toISOString().split('T')[0];
+  
+  return tasks.map(task => {
+    let currentTask = { ...task };
+    
+    // Migrate old tasks that did not have a dayOfWeek
+    if (!currentTask.dayOfWeek) {
+        currentTask.dayOfWeek = 'Jeden Tag';
+    }
+
+    if (!currentTask.frequency) {
+        currentTask.frequency = currentTask.dayOfWeek === 'Jeden Tag' ? 'Täglich' : 'Wöchentlich';
+    }
+
+    // Replace old "Flur" room
+    if (currentTask.room === 'Flur') {
+        currentTask.room = 'Flur unten';
+    }
+
+    // Inject missing dueDate for older tasks
+    if (!currentTask.dueDate) {
+       currentTask.dueDate = getNextDueDate(currentTask.dayOfWeek, new Date(currentTask.createdAt || Date.now()));
+    }
+
+    // Toggle active if due date reached AND it was marked done
+    if (currentTask.isDone && currentTask.frequency !== 'Einmalig' && currentTask.dueDate <= todayStr) {
+      return { 
+         ...currentTask, 
+         isDone: false, 
+         completedAt: null,
+         subtasks: currentTask.subtasks ? currentTask.subtasks.map(s => ({ ...s, isDone: false })) : currentTask.subtasks
+      };
+    }
+    
+    return currentTask;
+  });
+}
+
+// --- Icons --- 
+const CheckIcon = () => (
+  <svg width="14" height="14" fill="none" stroke="currentColor" strokeWidth="3" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M5 13l4 4L19 7"/></svg>
+);
+const EditIcon = () => (
+  <svg width="18" height="18" fill="none" stroke="currentColor" strokeWidth="2" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path strokeLinecap="round" strokeLinejoin="round" d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+);
+
+// --- Components ---
+
+function SetupScreen({ onComplete }) {
+  const [persons, setPersons] = useState([
+     {name: '', color: COLOR_PRESETS[0]},
+     {name: '', color: COLOR_PRESETS[1]},
+     {name: '', color: COLOR_PRESETS[2]},
+     {name: '', color: COLOR_PRESETS[3]},
+     {name: '', color: COLOR_PRESETS[4]},
+     {name: '', color: COLOR_PRESETS[5]}
+  ]);
+
+  const handleNameChange = (index, value) => {
+    const newP = [...persons];
+    newP[index].name = value;
+    setPersons(newP);
+  };
+  
+  const handleColorChange = (index, value) => {
+    const newP = [...persons];
+    newP[index].color = value;
+    setPersons(newP);
+  };
+
+  const handleSubmit = () => {
+    const validPersons = persons
+      .filter(p => p.name.trim() !== '')
+      .map((p, idx) => ({
+        id: 'p_' + Date.now() + '_' + idx,
+        name: p.name.trim(),
+        color: p.color
+      }));
+    
+    if (validPersons.length > 0) {
+      onComplete(validPersons);
+    } else {
+      alert("Bitte gib mindestens einen Namen ein.");
+    }
+  };
+
+  return (
+    <div className="container setup-container">
+      <div className="surface text-center">
+        <h1>Willkommen bei HaushaltsBuddy</h1>
+        <p className="text-muted mb-md">Wer wohnt in diesem Haushalt? (Max. 6 Personen)</p>
+        
+        <div className="flex-column gap-sm mb-md">
+          {persons.map((p, i) => (
+            <div key={i} className="person-input-row">
+              <input type="color" value={p.color} onChange={(e) => handleColorChange(i, e.target.value)} />
+              <input 
+                type="text" 
+                placeholder={`Person ${i+1}`} 
+                value={p.name} 
+                onChange={(e) => handleNameChange(i, e.target.value)}
+              />
+            </div>
+          ))}
+        </div>
+        
+        <button className="btn-primary" onClick={handleSubmit}>Los geht's!</button>
+      </div>
+    </div>
+  );
+}
+
+function SettingsModal({ persons: initialPersons, rooms: initialRooms, onClose, onSave }) {
+  const [persons, setPersons] = useState(() => {
+     let p = [...initialPersons];
+     while (p.length < 6) {
+        p.push({
+           id: 'p_temp_' + Date.now() + '_' + p.length,
+           name: '',
+           color: COLOR_PRESETS[p.length] || '#888888',
+           isNew: true
+        });
+     }
+     return p;
+  });
+
+  const [rooms, setRooms] = useState([...initialRooms]);
+
+  const handleNameChange = (index, value) => {
+    const newP = [...persons];
+    newP[index].name = value;
+    setPersons(newP);
+  };
+  
+  const handleColorChange = (index, value) => {
+    const newP = [...persons];
+    newP[index].color = value;
+    setPersons(newP);
+  };
+
+  const handleRoomNameChange = (index, value) => {
+    const newR = [...rooms];
+    newR[index] = { ...newR[index], id: value };
+    setRooms(newR);
+  };
+
+  const handleSave = () => {
+    const valid = persons
+       .filter(p => p.name.trim() !== '')
+       .map(p => ({
+          id: p.isNew ? 'p_' + Date.now() + Math.random().toString(36).substr(2, 9) : p.id,
+          name: p.name.trim(),
+          color: p.color
+       }));
+    
+    if (valid.length === 0) {
+       return alert("Bitte mindestens eine Person einstellen.");
+    }
+
+    const validRooms = rooms.filter(r => r.id.trim() !== '').map(r => ({ ...r, id: r.id.trim() }));
+    onSave(valid, validRooms);
+  };
+
+  return (
+    <div className="modal-overlay" onClick={(e) => { if(e.target === e.currentTarget) onClose(); }}>
+      <div className="modal-content">
+        <div className="modal-header">
+          <h2 className="fw-bold">Einstellungen ⚙️</h2>
+          <button className="close-btn" onClick={onClose} style={{border:'none', cursor:'pointer'}}>&times;</button>
+        </div>
+
+        <h3 style={{marginBottom: 'var(--spacing-sm)'}}>👤 Haushaltsmitglieder</h3>
+        <p className="text-muted mb-sm small">Namen und Farben anpassen.</p>
+        
+        <div className="flex-column gap-sm mb-lg">
+          {persons.map((p, i) => (
+            <div key={p.id} className="person-input-row">
+              <input type="color" value={p.color} onChange={(e) => handleColorChange(i, e.target.value)} />
+              <input 
+                type="text" 
+                placeholder={`Person ${i+1} Name`} 
+                value={p.name} 
+                onChange={(e) => handleNameChange(i, e.target.value)}
+              />
+            </div>
+          ))}
+        </div>
+
+        <h3 style={{marginBottom: 'var(--spacing-sm)'}}>🏠 Räume</h3>
+        <p className="text-muted mb-sm small">Raumnamen anpassen. Leere Felder werden entfernt.</p>
+        
+        <div className="flex-column gap-sm mb-lg">
+          {rooms.map((r, i) => (
+            <div key={i} className="person-input-row">
+              <span style={{fontSize:'1.4em', width:'32px', textAlign:'center', flexShrink:0}}>{r.icon}</span>
+              <input 
+                type="text" 
+                placeholder={`Raum ${i+1}`} 
+                value={r.id} 
+                onChange={(e) => handleRoomNameChange(i, e.target.value)}
+              />
+            </div>
+          ))}
+        </div>
+        
+        <button className="btn-primary" onClick={handleSave}>Änderungen speichern</button>
+      </div>
+    </div>
+  );
+}
+
+function TaskModal({ onClose, onSave, persons, rooms, taskToEdit }) {
+  const [category, setCategory] = useState(taskToEdit ? taskToEdit.category || 'Aufgabe' : 'Aufgabe');
+  const [name, setName] = useState(taskToEdit ? taskToEdit.name : '');
+  const [room, setRoom] = useState(taskToEdit ? taskToEdit.room : 'Küche');
+  const [assigned, setAssigned] = useState(taskToEdit ? taskToEdit.assignedIds : []);
+  const [frequency, setFrequency] = useState(taskToEdit && taskToEdit.frequency ? taskToEdit.frequency : 'Wöchentlich');
+  const [dayOfWeek, setDayOfWeek] = useState(taskToEdit && taskToEdit.dayOfWeek ? taskToEdit.dayOfWeek : 'Montag');
+  const [time, setTime] = useState(taskToEdit && taskToEdit.time ? taskToEdit.time : '');
+  const [subtasks, setSubtasks] = useState(taskToEdit && taskToEdit.subtasks ? taskToEdit.subtasks : []);
+  const [newSubtask, setNewSubtask] = useState('');
+
+  useEffect(() => {
+    if (frequency === 'Täglich') {
+       if (dayOfWeek !== 'Jeden Tag') setDayOfWeek('Jeden Tag');
+    } else if (dayOfWeek === 'Jeden Tag') {
+       setDayOfWeek('Montag');
+    }
+  }, [frequency, dayOfWeek]);
+
+  const togglePerson = (personId) => {
+    if (assigned.includes(personId)) {
+      setAssigned(assigned.filter(id => id !== personId));
+    } else {
+      setAssigned([...assigned, personId]);
+    }
+  };
+
+  const handleSave = () => {
+    if (!name.trim()) return alert("Bitte etwas eingeben.");
+    if (assigned.length === 0) return alert("Bitte mindestens eine Person zuweisen.");
+    
+    let newDueDate = (taskToEdit && taskToEdit.dueDate) ? taskToEdit.dueDate : getNextDueDate(dayOfWeek, new Date());
+    if (taskToEdit && taskToEdit.dayOfWeek !== dayOfWeek) {
+       newDueDate = getNextDueDate(dayOfWeek, new Date());
+    }
+
+    const submittedTask = {
+      ...(taskToEdit || { id: 't_' + Date.now(), isDone: false, completedAt: null, createdAt: new Date().toISOString() }),
+      category,
+      name: name.trim(),
+      room,
+      assignedIds: assigned,
+      frequency,
+      dayOfWeek,
+      time,
+      dueDate: newDueDate,
+      subtasks
+    };
+    onSave(submittedTask);
+  };
+
+  return (
+    <div className="modal-overlay" onClick={(e) => { if(e.target === e.currentTarget) onClose(); }}>
+      <div className="modal-content">
+        <div className="modal-header">
+          <h2 className="fw-bold">{taskToEdit ? 'Eintrag bearbeiten' : 'Neuer Eintrag'}</h2>
+          <button className="close-btn" onClick={onClose} style={{border:'none', cursor:'pointer'}}>&times;</button>
+        </div>
+
+        <div className="form-group">
+          <label className="form-label">Kategorie</label>
+          <div className="segmented-control mb-md">
+            {['Aufgabe', 'Hobby'].map(cat => (
+              <div 
+                key={cat} 
+                className={`segmented-item ${category === cat ? 'active' : ''}`}
+                onClick={() => setCategory(cat)}
+              >
+                {cat === 'Aufgabe' ? '🧹 Aufgabe' : '🌟 Hobby'}
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="form-group">
+          <label className="form-label">{category === 'Hobby' ? 'Hobby' : 'Aufgabe'}</label>
+          <input type="text" placeholder={category === 'Hobby' ? 'z.B. Fußballtraining...' : 'z.B. Müll rausbringen...'} value={name} onChange={e => setName(e.target.value)} />
+        </div>
+
+        <div className="form-group">
+          <label className="form-label">Wo?</label>
+          <select value={room} onChange={e => setRoom(e.target.value)}>
+            {rooms.map(r => (
+              <option key={r.id} value={r.id}>{r.icon} {r.id}</option>
+            ))}
+          </select>
+        </div>
+
+        <div className="form-group">
+          <label className="form-label">Wer ist dabei? (Mehrfachauswahl)</label>
+          <div className="person-checkbox-list">
+            {persons.map(p => {
+              const checked = assigned.includes(p.id);
+              return (
+                <div key={p.id} className={`person-checkbox-item ${checked ? 'selected' : ''}`} onClick={() => togglePerson(p.id)}>
+                   <div style={{width:'18px', height:'18px', borderRadius:'4px', backgroundColor: checked ? 'var(--color-primary)' : 'transparent', border:`2px solid ${checked ? 'var(--color-primary)' : 'var(--color-border)'}`, display: 'flex', alignItems:'center', justifyContent:'center', color:'white'}}>
+                     {checked && <CheckIcon />}
+                   </div>
+                   <span style={{fontWeight: checked ? 'bold' : 'normal', color: 'var(--color-text)'}}>{p.name}</span>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        <div className="form-group d-flex gap-md">
+          <div style={{flex: 1}}>
+            <label className="form-label">Häufigkeit</label>
+            <select value={frequency} onChange={e => setFrequency(e.target.value)}>
+              {['Einmalig', 'Täglich', 'Wöchentlich', 'Zweiwöchentlich', 'Monatlich'].map(o => <option key={o} value={o}>{o}</option>)}
+            </select>
+          </div>
+          {frequency !== 'Täglich' && (
+            <div style={{flex: 1}}>
+              <label className="form-label">Wochentag</label>
+              <select value={dayOfWeek} onChange={e => setDayOfWeek(e.target.value)}>
+                {DAY_OPTIONS.filter(o => o !== 'Jeden Tag').map(o => <option key={o} value={o}>{o}</option>)}
+              </select>
+            </div>
+          )}
+        </div>
+        
+        <div className="form-group d-flex gap-md">
+          <div style={{flex: 1}}>
+            <label className="form-label">Uhrzeit (Optional)</label>
+            <div className="d-flex gap-sm">
+              <input type="time" value={time} onChange={e => setTime(e.target.value)} style={{flex: 1, padding: '8px'}} />
+            </div>
+          </div>
+        </div>
+
+        <div className="form-group">
+          <label className="form-label">Unterpunkte / Checkliste (Optional)</label>
+          {subtasks.length > 0 && (
+             <div className="subtask-list mb-sm" style={{borderTop: 'none', marginTop: 0, paddingTop: 0}}>
+                {subtasks.map(st => (
+                   <div key={st.id} className="subtask-item">
+                      <div className="subtask-text">{st.text}</div>
+                      <button className="subtask-item-btn" onClick={() => setSubtasks(subtasks.filter(s => s.id !== st.id))}>&times;</button>
+                   </div>
+                ))}
+             </div>
+          )}
+          <div className="subtask-input-group">
+            <input 
+              type="text" 
+              placeholder="Neuer Unterpunkt..." 
+              value={newSubtask} 
+              onChange={e => setNewSubtask(e.target.value)}
+              onKeyDown={e => {
+                if (e.key === 'Enter') {
+                   e.preventDefault();
+                   if (newSubtask.trim()) {
+                     setSubtasks([...subtasks, { id: 'st_' + Date.now() + Math.random().toString().substr(2, 5), text: newSubtask.trim(), isDone: false }]);
+                     setNewSubtask('');
+                   }
+                }
+              }}
+            />
+            <button 
+              className="btn-primary" 
+              style={{width: 'auto', padding: '10px 16px'}}
+              onClick={() => {
+                 if (newSubtask.trim()) {
+                   setSubtasks([...subtasks, { id: 'st_' + Date.now() + Math.random().toString().substr(2, 5), text: newSubtask.trim(), isDone: false }]);
+                   setNewSubtask('');
+                 }
+              }}
+            >
+              ＋
+            </button>
+          </div>
+        </div>
+
+        <div className="mt-md">
+           <button className="btn-primary" onClick={handleSave}>Speichern</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function TaskItem({ task, persons, rooms, onToggle, onEdit, onToggleSubtask, displayMode = 'list' }) {
+  const prioColor = getPriorityColor(task);
+  const taskPersons = task.assignedIds.map(id => persons.find(p => p.id === id)).filter(Boolean);
+  const roomObj = (rooms || DEFAULT_ROOMS).find(r => r.id === task.room) || { id: task.room, icon: '🏠' };
+  const taskIcon = task.category === 'Hobby' ? '🌟' : roomObj.icon;
+  const subtasks = task.subtasks || [];
+
+  if (displayMode === 'calendar') {
+     return (
+       <div 
+         className={`task-item-compact ${task.isDone ? 'is-done' : ''}`} 
+         style={{ '--task-prio-color': prioColor }}
+         onClick={onToggle}
+         onDoubleClick={onEdit}
+         title={`${task.name} (${task.room})${subtasks.length > 0 ? '\n' + subtasks.map(s => (s.isDone ? '✓ ' : '○ ') + s.text).join('\n') : ''}`}
+       >
+          <div className="icon-large">{taskIcon}</div>
+          {subtasks.length > 0 && (
+            <div style={{fontSize:'0.6rem', color:'var(--color-text-muted)', marginTop: '2px'}}>{subtasks.filter(s=>s.isDone).length}/{subtasks.length}</div>
+          )}
+          <div className="avatar-group-compact">
+            {taskPersons.slice(0, 3).map(p => (
+               <div key={p.id} className="avatar-compact" style={{ '--avatar-color': p.color }} title={p.name}></div>
+            ))}
+          </div>
+       </div>
+     );
+  }
+
+  return (
+    <div className={`task-item ${task.isDone ? 'is-done' : ''} ${task.category === 'Hobby' ? 'is-hobby' : ''}`} style={{ '--task-prio-color': prioColor, flexWrap: 'wrap' }}>
+      <div className="task-main">
+         <div className="fw-bold task-title d-flex align-center gap-xs">
+           {task.category === 'Hobby' && <span style={{fontSize:'1.3em', marginRight:'4px'}}>🌟</span>} {task.name}
+         </div>
+         <div className="task-meta">
+            <span className="room-badge"><span style={{fontSize:'1.3em'}}>{roomObj.icon}</span> {task.room}</span>
+            <span className="repeat-label">
+              {task.frequency && task.frequency !== 'Wöchentlich' && task.frequency !== 'Täglich' && `🔁 ${task.frequency} | `}
+              {task.dayOfWeek !== 'Jeden Tag' && '📅 ' + task.dayOfWeek}
+              {task.dayOfWeek !== 'Jeden Tag' && task.time && ' | '}
+              {task.time && '⏰ ' + task.time + ' Uhr'}
+            </span>
+         </div>
+      </div>
+      
+      <div className="avatar-group">
+         {taskPersons.slice(0, 3).map(p => (
+           <div key={p.id} className="avatar" style={{ '--avatar-color': p.color }} title={p.name}>
+              {getInitials(p.name)}
+           </div>
+         ))}
+      </div>
+
+      <div className="d-flex align-center gap-sm">
+        <button className="edit-btn" onClick={onEdit}><EditIcon /></button>
+        <div className={`task-checkbox ${task.isDone ? 'checked' : ''}`} onClick={onToggle}>
+           {task.isDone && <CheckIcon />}
+        </div>
+      </div>
+
+      {subtasks.length > 0 && (
+        <div className="subtask-list" style={{width: '100%'}}>
+          {subtasks.map(st => (
+            <div key={st.id} className={`subtask-item ${st.isDone ? 'is-done' : ''}`}>
+              <div className={`subtask-checkbox ${st.isDone ? 'checked' : ''}`} onClick={() => onToggleSubtask && onToggleSubtask(task.id, st.id)}>
+                {st.isDone && <CheckIcon />}
+              </div>
+              <div className="subtask-text">{st.text}</div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Dashboard({ persons: initialPersons, initialTasks, initialRooms, onSaveData }) {
+  const [tasks, setTasks] = useState(initialTasks);
+  const [persons, setPersons] = useState(initialPersons);
+  const [rooms, setRooms] = useState(initialRooms || DEFAULT_ROOMS);
+  const [filterRoom, setFilterRoom] = useState('Alle');
+  const [filterPerson, setFilterPerson] = useState('Alle');
+  
+  const [showModal, setShowModal] = useState(false);
+  const [showSettings, setShowSettings] = useState(false);
+  const [taskToEdit, setTaskToEdit] = useState(null);
+  
+  const [viewMode, setViewMode] = useState('Heute'); // 'Heute' | 'Wochenplan'
+  const [layoutMode, setLayoutMode] = useState('list'); // 'list' | 'calendar'
+  const [showDone, setShowDone] = useState(false);
+
+  const allRooms = getRoomsWithAll(rooms);
+
+  useEffect(() => {
+    onSaveData({ persons, tasks, rooms });
+  }, [tasks, persons, rooms, onSaveData]);
+
+  // Sync persons filter if a person was deleted
+  useEffect(() => {
+     if (filterPerson !== 'Alle' && !persons.find(p => p.id === filterPerson)) {
+         setFilterPerson('Alle');
+     }
+  }, [persons, filterPerson]);
+
+  const saveTask = (task) => {
+    if (taskToEdit) {
+      setTasks(tasks.map(t => t.id === task.id ? task : t));
+    } else {
+      setTasks([task, ...tasks]);
+    }
+    setShowModal(false);
+    setTaskToEdit(null);
+  };
+
+  const openEdit = (task) => {
+    setTaskToEdit(task);
+    setShowModal(true);
+  };
+
+  const openNew = () => {
+    setTaskToEdit(null);
+    setShowModal(true);
+  };
+
+  const toggleTask = (taskId) => {
+    setTasks(tasks.map(t => {
+      if (t.id === taskId) {
+        const newlyDone = !t.isDone;
+        let newDueDate = t.dueDate;
+        
+        if (newlyDone) {
+           const nextDateObj = new Date();
+           if (t.frequency === 'Einmalig') {
+             // Keep dueDate as is; processTasksReset disables revival
+           } else if (t.frequency === 'Täglich') {
+             nextDateObj.setDate(nextDateObj.getDate() + 1);
+             newDueDate = nextDateObj.toISOString().split('T')[0];
+           } else if (t.frequency === 'Zweiwöchentlich') {
+             nextDateObj.setDate(nextDateObj.getDate() + 14);
+             newDueDate = getNextDueDate(t.dayOfWeek, nextDateObj);
+           } else if (t.frequency === 'Monatlich') {
+             nextDateObj.setDate(nextDateObj.getDate() + 28);
+             newDueDate = getNextDueDate(t.dayOfWeek, nextDateObj);
+           } else {
+             nextDateObj.setDate(nextDateObj.getDate() + 1); 
+             newDueDate = getNextDueDate(t.dayOfWeek, nextDateObj); // Weekly default
+           }
+        } else {
+           newDueDate = getNextDueDate(t.dayOfWeek, new Date());
+        }
+        
+        return {
+           ...t, 
+           isDone: newlyDone,
+           completedAt: newlyDone ? new Date().toISOString() : null,
+           dueDate: newDueDate,
+           subtasks: newlyDone && t.subtasks ? t.subtasks.map(s => ({ ...s, isDone: true })) : t.subtasks
+        };
+      }
+      return t;
+    }));
+  };
+
+  const toggleSubtask = (taskId, subtaskId) => {
+    setTasks(tasks.map(t => {
+      if (t.id === taskId && t.subtasks) {
+        return {
+          ...t,
+          subtasks: t.subtasks.map(s => s.id === subtaskId ? { ...s, isDone: !s.isDone } : s)
+        };
+      }
+      return t;
+    }));
+  };
+
+  const todayIndex = new Date().getDay();
+  const currentDayName = Object.keys(DAY_MAP).find(key => DAY_MAP[key] === todayIndex);
+
+  // Basis-Filterung (Raum & Person)
+  const baseFiltered = useMemo(() => {
+    return tasks.filter(t => {
+       const matchRoom = filterRoom === 'Alle' || t.room === filterRoom;
+       const matchPerson = filterPerson === 'Alle' || t.assignedIds.includes(filterPerson);
+       return matchRoom && matchPerson;
+    });
+  }, [tasks, filterRoom, filterPerson]);
+
+  const sortedFiltered = [...baseFiltered].sort((a, b) => {
+    // Sort logic: First by Time
+    if (!a.time && !b.time) return 0;
+    if (!a.time) return 1;
+    if (!b.time) return -1;
+    return a.time.localeCompare(b.time);
+  });
+
+  const todayStr = new Date().toISOString().split('T')[0];
+  
+  // View-spezifische Filterung
+  // Heute zeigt alle, die in der Vergangenheit bis heute Fällig waren
+  const todayTasks = sortedFiltered.filter(t => t.dueDate <= todayStr);
+  const activeToday = todayTasks.filter(t => !t.isDone);
+  const doneToday = sortedFiltered.filter(t => t.isDone && new Date(t.completedAt).toISOString().split('T')[0] === todayStr);
+
+  const activeTodayCount = activeToday.length;
+  const doneTodayCount = doneToday.length;
+  const totalRelevantToday = activeTodayCount + doneTodayCount;
+  const progressPercent = totalRelevantToday === 0 ? 0 : Math.round((doneTodayCount / totalRelevantToday) * 100);
+
+  const WEEKDAYS = ['Montag', 'Dienstag', 'Mittwoch', 'Donnerstag', 'Freitag', 'Samstag', 'Sonntag'];
+  const WEEKDAYS_SHORT = { 'Montag': 'Mo', 'Dienstag': 'Di', 'Mittwoch': 'Mi', 'Donnerstag': 'Do', 'Freitag': 'Fr', 'Samstag': 'Sa', 'Sonntag': 'So' };
+
+  return (
+    <div className="container">
+      <div className="d-flex align-center justify-between mb-md pt-md">
+        <h1 style={{margin:0}}>HaushaltsBuddy <span style={{fontSize:'1.2rem'}}>🧹</span></h1>
+        <div className="d-flex align-center gap-sm">
+          <div className="layout-toggle">
+            <div className={`layout-toggle-btn ${layoutMode === 'list' ? 'active' : ''}`} onClick={() => setLayoutMode('list')} title="Listenansicht">📝</div>
+            <div className={`layout-toggle-btn ${layoutMode === 'calendar' ? 'active' : ''}`} onClick={() => setLayoutMode('calendar')} title="Kalenderansicht">📅</div>
+          </div>
+          <button 
+             className="settings-btn" 
+             onClick={() => setShowSettings(true)}
+             style={{fontSize: '1.5rem', background: 'none', border: 'none', cursor: 'pointer', padding: '4px'}}
+          >
+             ⚙️
+          </button>
+        </div>
+      </div>
+
+      <div className="tabs-container">
+        <div className={`tab-btn ${viewMode === 'Heute' ? 'active' : ''}`} onClick={() => setViewMode('Heute')}>Heute</div>
+        <div className={`tab-btn ${viewMode === 'Wochenplan' ? 'active' : ''}`} onClick={() => setViewMode('Wochenplan')}>Wochenplan</div>
+      </div>
+
+      {/* Filter Bars */}
+      <div className="filter-bar mb-sm">
+        {allRooms.map(r => (
+          <div 
+             key={r.id} 
+             className={`filter-chip ${filterRoom === r.id ? 'active' : ''}`}
+             onClick={() => setFilterRoom(r.id)}
+          >
+            <span style={{fontSize:'1.3em'}}>{r.icon}</span> {r.id !== 'Draußen' && r.id !== 'Alle' ? r.id : ''}
+          </div>
+        ))}
+      </div>
+      <div className="filter-bar mb-md">
+        <div 
+           className={`filter-chip person-chip ${filterPerson === 'Alle' ? 'active' : ''}`}
+           style={{ '--chip-color': 'var(--color-primary)' }}
+           onClick={() => setFilterPerson('Alle')}
+        >
+          Alle
+        </div>
+        {persons.map(p => (
+           <div 
+             key={p.id} 
+             className={`filter-chip person-chip ${filterPerson === p.id ? 'active' : ''}`}
+             style={{ '--chip-color': p.color }}
+             onClick={() => setFilterPerson(p.id)}
+          >
+            {p.name}
+          </div>
+        ))}
+      </div>
+
+      {viewMode === 'Heute' ? (
+        <>
+          <div className="summary-bar">
+            <div className="d-flex justify-between small fw-bold">
+               <span>Tagesfortschritt ({currentDayName})</span>
+               <span>{doneTodayCount} von {totalRelevantToday} erledigt</span>
+            </div>
+            <div className="progress-bg">
+               <div className="progress-fill" style={{ width: `${progressPercent}%` }}></div>
+            </div>
+          </div>
+
+          {activeToday.length === 0 ? (
+             <div className="text-center text-muted mt-md p-md surface" style={{borderStyle:'dashed'}}>
+               Keine offenen Punkte für heute! 🎉
+             </div>
+          ) : (
+            rooms.filter(r => filterRoom === 'Alle' || r.id === filterRoom).map(room => {
+              const roomTasks = activeToday.filter(t => t.room === room.id);
+              if (roomTasks.length === 0) return null;
+              return (
+                <div key={room.id} className="mt-sm">
+                  <div className="room-section-title">
+                    <span style={{fontSize:'1.3em'}}>{room.icon}</span> {room.id}
+                    <span className="room-task-count">{roomTasks.length}</span>
+                  </div>
+                  <div className={layoutMode === 'calendar' ? 'task-grid' : 'task-list'}>
+                    {roomTasks.map(t => <TaskItem key={t.id} task={t} persons={persons} rooms={rooms} onToggle={() => toggleTask(t.id)} onEdit={() => openEdit(t)} onToggleSubtask={toggleSubtask} displayMode={layoutMode} />)}
+                  </div>
+                </div>
+              );
+            })
+          )}
+
+          {doneToday.length > 0 && (
+             <div className="mt-md">
+                <div 
+                  className="d-flex justify-between align-center section-title"
+                  style={{cursor:'pointer'}}
+                  onClick={() => setShowDone(!showDone)}
+                >
+                  <span>Erledigt ({doneToday.length})</span>
+                  <span>{showDone ? '▲' : '▼'}</span>
+                </div>
+                {showDone && (
+                  <div className={`${layoutMode === 'calendar' ? 'task-grid' : 'task-list'} opacity-80 mt-sm`}>
+                     {doneToday.map(t => <TaskItem key={t.id} task={t} persons={persons} rooms={rooms} onToggle={() => toggleTask(t.id)} onEdit={() => openEdit(t)} onToggleSubtask={toggleSubtask} displayMode={layoutMode} />)}
+                  </div>
+                )}
+             </div>
+          )}
+        </>
+      ) : (
+        layoutMode === 'calendar' ? (
+          <div className="week-calendar">
+            {WEEKDAYS.map(dayText => {
+               const itemsForDay = sortedFiltered.filter(t => t.dayOfWeek === dayText || t.dayOfWeek === 'Jeden Tag');
+               return (
+                 <div key={dayText} className="week-calendar-day">
+                   <div className={`day-title ${dayText === currentDayName ? 'fw-bold' : ''}`} style={dayText === currentDayName ? {color: 'var(--color-primary)', borderBottomColor: 'var(--color-primary)'} : {}}>
+                     {WEEKDAYS_SHORT[dayText]} {dayText === currentDayName ? '•' : ''}
+                   </div>
+                   {itemsForDay.map(t => (
+                     <TaskItem key={t.id + dayText} task={t} persons={persons} rooms={rooms} onToggle={() => toggleTask(t.id)} onEdit={() => openEdit(t)} onToggleSubtask={toggleSubtask} displayMode="calendar" />
+                   ))}
+                   {itemsForDay.length === 0 && (
+                     <div style={{textAlign:'center', color:'var(--color-text-muted)', fontSize:'0.8rem', padding: '8px 0'}}>—</div>
+                   )}
+                 </div>
+               );
+            })}
+          </div>
+        ) : (
+          <div className="week-grid">
+            {WEEKDAYS.map(dayText => {
+               const itemsForDay = sortedFiltered.filter(t => t.dayOfWeek === dayText || t.dayOfWeek === 'Jeden Tag');
+               if (itemsForDay.length === 0) return null;
+               return (
+                 <div key={dayText} className="day-column">
+                   <div className="day-title">{dayText} {dayText === currentDayName ? '(Heute)' : ''}</div>
+                   <div className="task-list">
+                      {itemsForDay.map(t => (
+                         <TaskItem key={t.id + dayText} task={t} persons={persons} rooms={rooms} onToggle={() => toggleTask(t.id)} onEdit={() => openEdit(t)} onToggleSubtask={toggleSubtask} displayMode="list" />
+                      ))}
+                   </div>
+                 </div>
+               );
+            })}
+          </div>
+        )
+      )}
+
+      {/* FAB */}
+      <button className="fab" onClick={openNew}>
+         <span style={{lineHeight: 1, paddingBottom: 2}}>＋</span>
+      </button>
+
+      {/* Modals */}
+      {showModal && (
+        <TaskModal 
+           onClose={() => {setShowModal(false); setTaskToEdit(null);}}
+           onSave={saveTask}
+           persons={persons}
+           rooms={rooms}
+           taskToEdit={taskToEdit}
+        />
+      )}
+      {showSettings && (
+        <SettingsModal 
+           persons={persons}
+           rooms={rooms}
+           onClose={() => setShowSettings(false)}
+           onSave={(newP, newRooms) => {
+              // Rename rooms in existing tasks
+              const oldRoomNames = rooms.map(r => r.id);
+              const newRoomNames = newRooms.map(r => r.id);
+              const renameMap = {};
+              rooms.forEach((oldR, i) => {
+                if (i < newRooms.length && oldR.id !== newRooms[i].id) {
+                  renameMap[oldR.id] = newRooms[i].id;
+                }
+              });
+              if (Object.keys(renameMap).length > 0) {
+                setTasks(prev => prev.map(t => ({
+                  ...t,
+                  room: renameMap[t.room] || t.room
+                })));
+              }
+              setPersons(newP);
+              setRooms(newRooms);
+              setShowSettings(false);
+           }}
+        />
+      )}
+    </div>
+  );
+}
+
+function App() {
+  const [data, setData] = useState(null);
+  const [isLoaded, setIsLoaded] = useState(false);
+
+  useEffect(() => {
+    let storedData = loadData();
+    if (storedData) {
+      if (storedData.persons) {
+         storedData.persons = storedData.persons.map(p => ({
+            ...p,
+            color: MIGRATION_COLORS[p.color] || p.color
+         }));
+      }
+      storedData.tasks = processTasksReset(storedData.tasks || []);
+    }
+    setData(storedData);
+    setIsLoaded(true);
+  }, []);
+
+  const handleSetupComplete = (persons) => {
+    const newData = { persons, tasks: [], rooms: DEFAULT_ROOMS };
+    setData(newData);
+    saveData(newData);
+  };
+
+  const handleSaveData = (updatedData) => {
+    setData(updatedData);
+    saveData(updatedData);
+  };
+
+  if (!isLoaded) return <div className="container text-center mt-lg text-muted">Lade...</div>;
+
+  if (!data || !data.persons || data.persons.length === 0) {
+    return <SetupScreen onComplete={handleSetupComplete} />;
+  }
+
+  return (
+    <Dashboard 
+      persons={data.persons} 
+      initialTasks={data.tasks || []} 
+      initialRooms={data.rooms || DEFAULT_ROOMS}
+      onSaveData={handleSaveData} 
+    />
+  );
+}
+
+const root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(<App />);
+  </script>
+</body>
+</html>
